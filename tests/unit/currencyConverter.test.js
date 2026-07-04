@@ -1,34 +1,34 @@
+jest.mock("../../src/models/setting.model");
+
+const Setting = require("../../src/models/setting.model");
 const { convertToPKR, getUsdToPkrRate } = require("../../src/utils/currencyConverter");
 
 describe("currencyConverter", () => {
-  const originalRate = process.env.USD_TO_PKR_RATE;
-
   afterEach(() => {
-    process.env.USD_TO_PKR_RATE = originalRate;
+    jest.clearAllMocks();
   });
 
-  test("returns PKR amounts unchanged", () => {
-    expect(convertToPKR(1500, "PKR")).toBe(1500);
+  test("returns PKR amounts unchanged", async () => {
+    expect(await convertToPKR(1500, "PKR", "user1")).toBe(1500);
   });
 
-  test("converts USD using default rate when env is unset", () => {
-    delete process.env.USD_TO_PKR_RATE;
-    expect(getUsdToPkrRate()).toBe(280);
-    expect(convertToPKR(10, "USD")).toBe(2800);
+  test("converts USD using user setting", async () => {
+    Setting.findOne.mockResolvedValue({ value: 300 });
+    expect(await getUsdToPkrRate("user1")).toBe(300);
+    expect(await convertToPKR(2, "USD", "user1")).toBe(600);
   });
 
-  test("converts USD using env rate override", () => {
-    process.env.USD_TO_PKR_RATE = "300";
-    expect(getUsdToPkrRate()).toBe(300);
-    expect(convertToPKR(2, "USD")).toBe(600);
+  test("throws when exchange rate is not configured", async () => {
+    Setting.findOne.mockResolvedValue(null);
+    await expect(getUsdToPkrRate("user1")).rejects.toThrow("Exchange rate not configured");
   });
 
-  test("returns 0 for invalid amounts", () => {
-    expect(convertToPKR(NaN, "PKR")).toBe(0);
-    expect(convertToPKR(undefined, "USD")).toBe(0);
+  test("returns 0 for invalid amounts", async () => {
+    expect(await convertToPKR(NaN, "PKR", "user1")).toBe(0);
+    expect(await convertToPKR(undefined, "USD", "user1")).toBe(0);
   });
 
-  test("passes through unknown currencies as-is", () => {
-    expect(convertToPKR(100, "EUR")).toBe(100);
+  test("passes through unknown currencies as-is", async () => {
+    expect(await convertToPKR(100, "EUR", "user1")).toBe(100);
   });
 });

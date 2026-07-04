@@ -19,10 +19,14 @@ const registerAndLogin = async (userData = defaultUser) => {
 
 const authHeader = (token) => ({ Authorization: `Bearer ${token}` });
 
+const setExchangeRate = async (token, rate) =>
+  request(app).put("/api/settings/exchange-rate").set(authHeader(token)).send({ rate });
+
 module.exports = {
   request,
   app,
   defaultUser,
   registerAndLogin,
   authHeader,
+  setExchangeRate,
 };

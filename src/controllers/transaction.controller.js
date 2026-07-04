@@ -16,7 +16,7 @@ const createTransaction = async (req, res) => {
 
   try {
     const { date, type, category, amount, currency, account, description } = req.body;
-    const amountPKR = convertToPKR(Number(amount), currency);
+    const amountPKR = await convertToPKR(Number(amount), currency, req.user.id);
     const month = getMonthFromDate(date);
 
     const transaction = await Transaction.create({
@@ -34,6 +34,9 @@ const createTransaction = async (req, res) => {
 
     return res.status(201).json({ message: "Transaction created.", data: transaction });
   } catch (error) {
+    if (error.statusCode === 400) {
+      return res.status(400).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Failed to create transaction.", error: error.message });
   }
 };
@@ -76,7 +79,7 @@ const updateTransaction = async (req, res) => {
       }
       const newAmount = amountValue !== undefined ? amountValue : existing.amount;
       const newCurrency = currencyValue || existing.currency;
-      updates.amountPKR = convertToPKR(newAmount, newCurrency);
+      updates.amountPKR = await convertToPKR(newAmount, newCurrency, req.user.id);
     }
     if (updates.date) {
       updates.month = getMonthFromDate(updates.date);
@@ -93,6 +96,9 @@ const updateTransaction = async (req, res) => {
     }
     return res.status(200).json({ message: "Transaction updated.", data: transaction });
   } catch (error) {
+    if (error.statusCode === 400) {
+      return res.status(400).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Failed to update transaction.", error: error.message });
   }
 };

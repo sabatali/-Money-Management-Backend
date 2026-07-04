@@ -3,8 +3,10 @@ const Setting = require("../models/setting.model");
 const getExchangeRate = async (req, res) => {
   try {
     const setting = await Setting.findOne({ key: "USD_TO_PKR_RATE", user: req.user.id });
-    const rate = setting ? Number(setting.value) : 280;
-    return res.status(200).json({ data: { rate: Number.isFinite(rate) && rate > 0 ? rate : 280 } });
+    const rate = setting ? Number(setting.value) : null;
+    return res.status(200).json({
+      data: { rate: Number.isFinite(rate) && rate > 0 ? rate : null },
+    });
   } catch (error) {
     return res.status(500).json({ message: "Failed to fetch exchange rate.", error: error.message });
   }

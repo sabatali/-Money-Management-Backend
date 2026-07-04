@@ -21,7 +21,8 @@ const createAccount = async (req, res) => {
     }
 
     const balance = Number(openingBalance || 0);
-    const openingBalancePKR = currency === "USD" ? convertToPKR(balance, "USD") : balance;
+    const openingBalancePKR =
+      currency === "USD" ? await convertToPKR(balance, "USD", req.user.id) : balance;
 
     const account = await Account.create({
       name,
@@ -32,6 +33,9 @@ const createAccount = async (req, res) => {
     });
     return res.status(201).json({ message: "Account created.", data: account });
   } catch (error) {
+    if (error.statusCode === 400) {
+      return res.status(400).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Failed to create account.", error: error.message });
   }
 };
