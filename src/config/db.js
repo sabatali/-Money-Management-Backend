@@ -1,7 +1,13 @@
 const mongoose = require("mongoose");
 
 const connectDB = async () => {
-  const mongoUri = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/expense_system";
+  const mongoUri = process.env.MONGO_URI;
+
+  if (!mongoUri) {
+    console.error("MongoDB connection failed: MONGO_URI is not set in .env");
+    process.exit(1);
+  }
+
   try {
     await mongoose.connect(mongoUri);
     console.log("MongoDB connected");
