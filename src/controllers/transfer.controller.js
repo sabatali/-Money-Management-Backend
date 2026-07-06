@@ -11,8 +11,11 @@ const createTransfer = async (req, res) => {
 
   try {
     const { amountOriginal, currency, fee, feeCurrency, fromAccount, date, description } = req.body;
-    const amountPKR = convertToPKR(Number(amountOriginal), currency);
-    const feePKR = fee && Number(fee) > 0 ? convertToPKR(Number(fee), feeCurrency || currency) : 0;
+    const amountPKR = await convertToPKR(Number(amountOriginal), currency, req.user.id);
+    const feePKR =
+      fee && Number(fee) > 0
+        ? await convertToPKR(Number(fee), feeCurrency || currency, req.user.id)
+        : 0;
 
     const transfer = await Transfer.create({
       ...req.body,
@@ -40,6 +43,9 @@ const createTransfer = async (req, res) => {
 
     return res.status(201).json({ message: "Transfer created.", data: transfer });
   } catch (error) {
+    if (error.statusCode === 400) {
+      return res.status(400).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Failed to create transfer.", error: error.message });
   }
 };
@@ -82,14 +88,14 @@ const updateTransfer = async (req, res) => {
       const newAmount =
         updates.amountOriginal !== undefined ? Number(updates.amountOriginal) : existing.amountOriginal;
       const newCurrency = updates.currency || existing.currency;
-      updates.amountPKR = convertToPKR(newAmount, newCurrency);
+      updates.amountPKR = await convertToPKR(newAmount, newCurrency, req.user.id);
     }
 
     // Recalculate feePKR if fee or feeCurrency changed
     if (updates.fee !== undefined || updates.feeCurrency !== undefined) {
       const newFee = updates.fee !== undefined ? Number(updates.fee) : existing.fee;
       const newFeeCurrency = updates.feeCurrency || existing.feeCurrency;
-      updates.feePKR = newFee > 0 ? convertToPKR(newFee, newFeeCurrency) : 0;
+      updates.feePKR = newFee > 0 ? await convertToPKR(newFee, newFeeCurrency, req.user.id) : 0;
     }
 
     const transfer = await Transfer.findOneAndUpdate(
@@ -102,6 +108,9 @@ const updateTransfer = async (req, res) => {
     }
     return res.status(200).json({ message: "Transfer updated.", data: transfer });
   } catch (error) {
+    if (error.statusCode === 400) {
+      return res.status(400).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Failed to update transfer.", error: error.message });
   }
 };

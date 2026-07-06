@@ -6,7 +6,6 @@ let mongoServer;
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
   process.env.JWT_SECRET = "test_secret";
-  process.env.USD_TO_PKR_RATE = "280";
   await mongoose.connect(mongoServer.getUri());
 });
 

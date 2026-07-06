@@ -130,7 +130,7 @@ const createGroupExpense = async (req, res) => {
       });
     }
 
-    const totalAmountPKR = convertToPKR(Number(totalAmountOriginal), currency);
+    const totalAmountPKR = await convertToPKR(Number(totalAmountOriginal), currency, req.user.id);
     const availableBalance = await getUserAccountBalance(paidBy, accountUsed);
     if (totalAmountPKR > availableBalance) {
       return res.status(400).json({
@@ -187,6 +187,9 @@ const createGroupExpense = async (req, res) => {
       .populate("splits.user", "name email");
     return res.status(201).json({ message: "Group expense created.", data: populated });
   } catch (error) {
+    if (error.statusCode === 400) {
+      return res.status(400).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Failed to create expense.", error: error.message });
   }
 };
@@ -264,7 +267,11 @@ const updateGroupExpense = async (req, res) => {
       return res.status(400).json({ message: "PaidBy must be a group member." });
     }
 
-    const totalAmountPKR = convertToPKR(Number(payload.totalAmountOriginal), payload.currency);
+    const totalAmountPKR = await convertToPKR(
+      Number(payload.totalAmountOriginal),
+      payload.currency,
+      req.user.id
+    );
     let finalSplits = [];
     if (payload.splitType === "EQUAL") {
       finalSplits = normalizeSplits(group.members, totalAmountPKR);
@@ -303,6 +310,9 @@ const updateGroupExpense = async (req, res) => {
 
     return res.status(200).json({ message: "Group expense updated.", data: expense });
   } catch (error) {
+    if (error.statusCode === 400) {
+      return res.status(400).json({ message: error.message });
+    }
     return res.status(500).json({ message: "Failed to update expense.", error: error.message });
   }
 };

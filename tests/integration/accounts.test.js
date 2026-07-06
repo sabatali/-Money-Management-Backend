@@ -1,4 +1,4 @@
-const { request, registerAndLogin, authHeader } = require("../helpers");
+const { request, registerAndLogin, authHeader, setExchangeRate } = require("../helpers");
 
 describe("Accounts API", () => {
   test("creates, lists, updates, and deletes an account", async () => {
@@ -59,6 +59,8 @@ describe("Accounts API", () => {
 
   test("converts USD opening balance to PKR", async () => {
     const { token } = await registerAndLogin();
+
+    await setExchangeRate(token, 280);
 
     const response = await request(require("../../src/app"))
       .post("/api/accounts")
