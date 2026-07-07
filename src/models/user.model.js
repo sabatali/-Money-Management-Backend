@@ -20,6 +20,27 @@ const userSchema = new mongoose.Schema(
       required: true,
       minlength: 6,
     },
+    emailVerified: {
+      type: Boolean,
+      default: false,
+    },
+    verifiedAt: {
+      type: Date,
+      default: null,
+    },
+    emailVerificationTokenHash: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    emailVerificationTokenExpiresAt: {
+      type: Date,
+      default: null,
+    },
+    emailVerificationLastSentAt: {
+      type: Date,
+      default: null,
+    },
     createdAt: {
       type: Date,
       default: Date.now,
@@ -27,6 +48,8 @@ const userSchema = new mongoose.Schema(
   },
   { versionKey: false }
 );
+
+userSchema.index({ emailVerificationTokenHash: 1 }, { sparse: true });
 
 userSchema.pre("save", async function hashPassword(next) {
   if (!this.isModified("password")) return next();

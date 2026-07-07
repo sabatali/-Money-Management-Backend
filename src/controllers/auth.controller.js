@@ -26,7 +26,14 @@ const register = async (req, res) => {
     return res.status(201).json({
       message: "Registration successful.",
       token,
-      user: { id: user._id, name: user.name, email: user.email, createdAt: user.createdAt },
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        createdAt: user.createdAt,
+        emailVerified: user.emailVerified,
+        verifiedAt: user.verifiedAt,
+      },
     });
   } catch (error) {
     return res.status(500).json({ message: "Registration failed.", error: error.message });
@@ -55,11 +62,39 @@ const login = async (req, res) => {
     return res.status(200).json({
       message: "Login successful.",
       token,
-      user: { id: user._id, name: user.name, email: user.email, createdAt: user.createdAt },
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        createdAt: user.createdAt,
+        emailVerified: user.emailVerified,
+        verifiedAt: user.verifiedAt,
+      },
     });
   } catch (error) {
     return res.status(500).json({ message: "Login failed.", error: error.message });
   }
 };
 
-module.exports = { register, login };
+const getMe = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+    return res.status(200).json({
+      data: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        createdAt: user.createdAt,
+        emailVerified: user.emailVerified,
+        verifiedAt: user.verifiedAt,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to fetch profile.", error: error.message });
+  }
+};
+
+module.exports = { register, login, getMe };

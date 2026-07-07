@@ -1,6 +1,7 @@
 const express = require("express");
 const { body } = require("express-validator");
 const auth = require("../middleware/auth.middleware");
+const requireVerifiedEmail = require("../middleware/requireVerifiedEmail.middleware");
 const {
   createGroupExpense,
   getGroupExpenses,
@@ -11,7 +12,9 @@ const {
 
 const router = express.Router();
 
+// requiresVerifiedEmail = true
 router.use(auth);
+router.use(requireVerifiedEmail);
 
 const expenseValidators = [
   body("group").isMongoId().withMessage("group is required."),

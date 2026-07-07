@@ -3,6 +3,7 @@ const { body } = require("express-validator");
 const auth = require("../middleware/auth.middleware");
 const {
   createCategory,
+  bulkCreateCategories,
   getCategories,
   getCategoryById,
   updateCategory,
@@ -16,11 +17,21 @@ router.use(auth);
 router.post(
   "/",
   [
-    body("name").trim().notEmpty().withMessage("Name is required."),
-    body("type").isIn(["income", "expense"]).withMessage("Type must be income or expense."),
+    body("masterCategoryId").optional().isMongoId().withMessage("Invalid master category."),
+    body("name")
+      .if((value, { req }) => !req.body.masterCategoryId)
+      .trim()
+      .notEmpty()
+      .withMessage("Name is required."),
+    body("type")
+      .if((value, { req }) => !req.body.masterCategoryId)
+      .isIn(["income", "expense"])
+      .withMessage("Type must be income or expense."),
   ],
   createCategory
 );
+
+router.post("/bulk", bulkCreateCategories);
 
 router.get("/", getCategories);
 router.get("/:id", getCategoryById);
