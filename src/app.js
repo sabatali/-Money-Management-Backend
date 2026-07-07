@@ -1,3 +1,4 @@
+
 const express = require("express");
 const authRoutes = require("./routes/auth.routes");
 const transactionRoutes = require("./routes/transaction.routes");
@@ -15,6 +16,7 @@ const app = express();
 app.use(express.json());
 const allowedOrigins = [
   "http://localhost:5173",
+  "https://money-management-frontend-gamma.vercel.app",
   ...(process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(",").map((origin) => origin.trim()) : []),
 ];
 
