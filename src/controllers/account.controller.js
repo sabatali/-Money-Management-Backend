@@ -6,6 +6,8 @@ const Loan = require("../models/loan.model");
 
 const { convertToPKR } = require("../utils/currencyConverter");
 const { calculateAccountBalances, getAccountBalancePKR } = require("../utils/accountBalanceCalculator");
+const { resolveAccountDetails } = require("../utils/masterDataResolver");
+const { ValidationError } = require("../utils/nameValidation");
 
 const createAccount = async (req, res) => {
   const errors = validationResult(req);
@@ -14,8 +16,13 @@ const createAccount = async (req, res) => {
   }
 
   try {
-    const { name, currency, openingBalance } = req.body;
-    const exists = await Account.findOne({ name, user: req.user.id });
+    const { masterAccountId, name, currency, openingBalance } = req.body;
+    const resolved = await resolveAccountDetails({ masterAccountId, name });
+
+    const exists = await Account.findOne({
+      normalizedName: resolved.normalizedName,
+      user: req.user.id,
+    });
     if (exists) {
       return res.status(409).json({ message: "Account already exists." });
     }
@@ -25,7 +32,12 @@ const createAccount = async (req, res) => {
       currency === "USD" ? await convertToPKR(balance, "USD", req.user.id) : balance;
 
     const account = await Account.create({
-      name,
+      name: resolved.name,
+      normalizedName: resolved.normalizedName,
+      type: resolved.type,
+      icon: resolved.icon,
+      masterAccount: resolved.masterAccount,
+      isCustom: resolved.isCustom,
       currency: currency || "PKR",
       openingBalance: balance,
       openingBalancePKR,
@@ -33,11 +45,76 @@ const createAccount = async (req, res) => {
     });
     return res.status(201).json({ message: "Account created.", data: account });
   } catch (error) {
-    if (error.statusCode === 400) {
+    if (error instanceof ValidationError || error.statusCode === 400) {
       return res.status(400).json({ message: error.message });
+    }
+    if (error.code === 11000) {
+      return res.status(409).json({ message: "Account already exists." });
     }
     return res.status(500).json({ message: "Failed to create account.", error: error.message });
   }
+};
+
+/**
+ * Accepts a list of accounts (each either { masterAccountId } or a custom
+ * { name }) and creates as many as possible in one request, e.g. from the
+ * onboarding screen. Duplicates (within the request or already saved) are
+ * reported as skipped rather than failing the whole batch.
+ */
+const bulkCreateAccounts = async (req, res) => {
+  const items = Array.isArray(req.body?.items) ? req.body.items : null;
+  if (!items || items.length === 0) {
+    return res.status(400).json({ message: "Provide a non-empty items array." });
+  }
+
+  const created = [];
+  const skipped = [];
+  const seenNormalizedNames = new Set();
+
+  const existingAccounts = await Account.find({ user: req.user.id }, "normalizedName");
+  existingAccounts.forEach((account) => seenNormalizedNames.add(account.normalizedName));
+
+  for (const item of items) {
+    try {
+      const resolved = await resolveAccountDetails({
+        masterAccountId: item.masterAccountId,
+        name: item.name,
+      });
+
+      if (seenNormalizedNames.has(resolved.normalizedName)) {
+        skipped.push({ input: item, reason: "Already exists." });
+        continue;
+      }
+
+      const balance = Number(item.openingBalance || 0);
+      const currency = item.currency === "USD" ? "USD" : "PKR";
+      const openingBalancePKR =
+        currency === "USD" ? await convertToPKR(balance, "USD", req.user.id) : balance;
+
+      const account = await Account.create({
+        name: resolved.name,
+        normalizedName: resolved.normalizedName,
+        type: resolved.type,
+        icon: resolved.icon,
+        masterAccount: resolved.masterAccount,
+        isCustom: resolved.isCustom,
+        currency,
+        openingBalance: balance,
+        openingBalancePKR,
+        user: req.user.id,
+      });
+
+      seenNormalizedNames.add(resolved.normalizedName);
+      created.push(account);
+    } catch (error) {
+      skipped.push({ input: item, reason: error.message || "Failed to create." });
+    }
+  }
+
+  return res.status(201).json({
+    message: `Created ${created.length} account(s), skipped ${skipped.length}.`,
+    data: { created, skipped },
+  });
 };
 
 const getAccounts = async (req, res) => {
@@ -68,9 +145,33 @@ const updateAccount = async (req, res) => {
   }
 
   try {
+    const update = { ...req.body };
+
+    if (typeof update.name === "string") {
+      const resolved = await resolveAccountDetails({ name: update.name });
+
+      const duplicate = await Account.findOne({
+        _id: { $ne: req.params.id },
+        normalizedName: resolved.normalizedName,
+        user: req.user.id,
+      });
+      if (duplicate) {
+        return res.status(409).json({ message: "Account already exists." });
+      }
+
+      update.name = resolved.name;
+      update.normalizedName = resolved.normalizedName;
+      if (resolved.masterAccount) {
+        update.type = resolved.type;
+        update.icon = resolved.icon;
+        update.masterAccount = resolved.masterAccount;
+        update.isCustom = false;
+      }
+    }
+
     const account = await Account.findOneAndUpdate(
       { _id: req.params.id, user: req.user.id },
-      req.body,
+      update,
       { new: true }
     );
     if (!account) {
@@ -78,6 +179,12 @@ const updateAccount = async (req, res) => {
     }
     return res.status(200).json({ message: "Account updated.", data: account });
   } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ message: error.message });
+    }
+    if (error.code === 11000) {
+      return res.status(409).json({ message: "Account already exists." });
+    }
     return res.status(500).json({ message: "Failed to update account.", error: error.message });
   }
 };
@@ -125,6 +232,7 @@ const getAccountBalances = async (req, res) => {
 
 module.exports = {
   createAccount,
+  bulkCreateAccounts,
   getAccounts,
   getAccountById,
   updateAccount,

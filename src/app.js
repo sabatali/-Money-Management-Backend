@@ -10,6 +10,7 @@ const groupRoutes = require("./routes/group.routes");
 const groupExpenseRoutes = require("./routes/groupExpense.routes");
 const userRoutes = require("./routes/user.routes");
 const settingRoutes = require("./routes/setting.routes");
+const masterDataRoutes = require("./routes/masterData.routes");
 
 const app = express();
 
@@ -52,6 +53,7 @@ app.use("/api/groups", groupRoutes);
 app.use("/api/group-expenses", groupExpenseRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/settings", settingRoutes);
+app.use("/api/master-data", masterDataRoutes);
 
 const devToolsEnabled =
   process.env.NODE_ENV !== "production" || process.env.ENABLE_DEV_RESET === "true";

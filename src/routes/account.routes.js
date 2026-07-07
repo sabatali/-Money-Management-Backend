@@ -3,6 +3,7 @@ const { body } = require("express-validator");
 const auth = require("../middleware/auth.middleware");
 const {
   createAccount,
+  bulkCreateAccounts,
   getAccounts,
   getAccountById,
   updateAccount,
@@ -17,7 +18,12 @@ router.use(auth);
 router.post(
   "/",
   [
-    body("name").trim().notEmpty().withMessage("Name is required."),
+    body("masterAccountId").optional().isMongoId().withMessage("Invalid master account."),
+    body("name")
+      .if((value, { req }) => !req.body.masterAccountId)
+      .trim()
+      .notEmpty()
+      .withMessage("Name is required."),
     body("currency")
       .optional()
       .isIn(["USD", "PKR"])
@@ -29,6 +35,8 @@ router.post(
   ],
   createAccount
 );
+
+router.post("/bulk", bulkCreateAccounts);
 
 router.get("/", getAccounts);
 router.get("/balances", getAccountBalances);

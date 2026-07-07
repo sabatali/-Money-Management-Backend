@@ -1,6 +1,7 @@
 const express = require("express");
 const { body } = require("express-validator");
 const auth = require("../middleware/auth.middleware");
+const requireVerifiedEmail = require("../middleware/requireVerifiedEmail.middleware");
 const {
   createGroup,
   getUserGroups,
@@ -19,7 +20,10 @@ const { getGroupBalances } = require("../controllers/settlement.controller");
 
 const router = express.Router();
 
+// requiresVerifiedEmail = true — Group Expenses is a collaborative feature
+// that needs trusted user identity (see requireVerifiedEmail.middleware.js).
 router.use(auth);
+router.use(requireVerifiedEmail);
 
 router.post("/", [body("name").trim().notEmpty().withMessage("Name is required.")], createGroup);
 router.get("/", getUserGroups);
