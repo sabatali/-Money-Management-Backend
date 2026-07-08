@@ -58,44 +58,59 @@ const createPayerGroupExpenseTransactions = async ({
   return { shareTx, advanceTx };
 };
 
+/**
+ * Records the personal-ledger side effects of a confirmed settlement.
+ * `fromUserRealId`/`toUserRealId` must be the underlying User._id for
+ * whichever side(s) are registered members — pass null/undefined for a
+ * guest side, since guests have no personal Account/Transaction history
+ * and that side is simply skipped.
+ */
 const createSettlementTransactions = async ({
   transfer,
   groupName,
   fromUserName,
   toUserName,
+  fromUserRealId,
+  toUserRealId,
 }) => {
   const month = getMonthFromDate(transfer.date);
   const amountPKR = Number(transfer.amountPKR || 0);
 
-  const payerTx = await Transaction.create({
-    date: transfer.date,
-    type: "expense",
-    category: "Group Settlement",
-    amount: amountPKR,
-    currency: "PKR",
-    amountPKR,
-    account: transfer.account,
-    description: `Paid ${toUserName} · ${groupName}`,
-    month,
-    user: transfer.fromUser,
-    groupTransfer: transfer._id,
-    countInExpenseHistory: false,
-  });
+  let payerTx = null;
+  if (fromUserRealId) {
+    payerTx = await Transaction.create({
+      date: transfer.date,
+      type: "expense",
+      category: "Group Settlement",
+      amount: amountPKR,
+      currency: "PKR",
+      amountPKR,
+      account: transfer.account,
+      description: `Paid ${toUserName} · ${groupName}`,
+      month,
+      user: fromUserRealId,
+      groupTransfer: transfer._id,
+      countInExpenseHistory: false,
+    });
+  }
 
-  const receiverTx = await Transaction.create({
-    date: transfer.date,
-    type: "income",
-    category: "Group Settlement",
-    amount: amountPKR,
-    currency: "PKR",
-    amountPKR,
-    account: transfer.toAccount,
-    description: `Received from ${fromUserName} · ${groupName}`,
-    month,
-    user: transfer.toUser,
-    groupTransfer: transfer._id,
-    countInIncomeHistory: false,
-  });
+  let receiverTx = null;
+  if (toUserRealId) {
+    receiverTx = await Transaction.create({
+      date: transfer.date,
+      type: "income",
+      category: "Group Settlement",
+      amount: amountPKR,
+      currency: "PKR",
+      amountPKR,
+      account: transfer.toAccount,
+      description: `Received from ${fromUserName} · ${groupName}`,
+      month,
+      user: toUserRealId,
+      groupTransfer: transfer._id,
+      countInIncomeHistory: false,
+    });
+  }
 
   return { payerTx, receiverTx };
 };
