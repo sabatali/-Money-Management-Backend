@@ -1,6 +1,7 @@
 const { validationResult } = require("express-validator");
 const Group = require("../models/group.model");
 const User = require("../models/user.model");
+const GroupMember = require("../models/groupMember.model");
 const GroupTransfer = require("../models/groupTransfer.model");
 const GroupMemberAccount = require("../models/groupMemberAccount.model");
 const Account = require("../models/account.model");
@@ -9,6 +10,19 @@ const Transfer = require("../models/transfer.model");
 const Loan = require("../models/loan.model");
 const { calculateAccountBalances, getAccountBalancePKR } = require("../utils/accountBalanceCalculator");
 const { createSettlementTransactions } = require("../utils/groupLedger");
+const { ValidationError } = require("../utils/nameValidation");
+const {
+  resolveGroupMember,
+  listGroupMembers,
+  serializeMemberRef,
+  serializeMemberFull,
+  ensureRegisteredMember,
+  createGuestMember,
+  updateGuestMember: applyGuestUpdate,
+} = require("../utils/groupMemberService");
+const { sendGuestInviteEmail } = require("../utils/emailService");
+
+const GUEST_INVITE_COOLDOWN_MS = 60 * 1000;
 
 const ensureMember = (group, userId) =>
   group.members.some((member) => {
@@ -49,6 +63,27 @@ const ensureLinkedAccount = async (groupId, userId, accountName) => {
   return null;
 };
 
+const withGroupMembers = async (group) => {
+  const groupObj = group.toObject ? group.toObject() : group;
+  const members = await listGroupMembers(groupObj._id);
+  groupObj.groupMembers = members.map(serializeMemberFull);
+  return groupObj;
+};
+
+const serializeTransfer = (transferDoc) => {
+  const obj = transferDoc.toObject ? transferDoc.toObject() : transferDoc;
+  return {
+    ...obj,
+    fromUser: serializeMemberRef(transferDoc.fromUser),
+    toUser: serializeMemberRef(transferDoc.toUser),
+  };
+};
+
+const populateTransfer = (query) =>
+  query
+    .populate({ path: "fromUser", populate: { path: "user", select: "name email" } })
+    .populate({ path: "toUser", populate: { path: "user", select: "name email" } });
+
 const createGroup = async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -63,8 +98,16 @@ const createGroup = async (req, res) => {
       members: [{ user: req.user.id, role: "admin" }],
     });
 
+    await ensureRegisteredMember({
+      group: group._id,
+      userId: req.user.id,
+      role: "admin",
+      joinedAt: group.createdAt,
+    });
+
     const populated = await Group.findById(group._id).populate("members.user", "name email");
-    return res.status(201).json({ message: "Group created.", data: populated });
+    const data = await withGroupMembers(populated);
+    return res.status(201).json({ message: "Group created.", data });
   } catch (error) {
     return res.status(500).json({ message: "Failed to create group.", error: error.message });
   }
@@ -93,7 +136,8 @@ const getGroupDetails = async (req, res) => {
         meta: { userId: req.user.id, groupId: req.params.id },
       });
     }
-    return res.status(200).json({ data: group });
+    const data = await withGroupMembers(group);
+    return res.status(200).json({ data });
   } catch (error) {
     return res.status(500).json({ message: "Failed to fetch group.", error: error.message });
   }
@@ -130,11 +174,125 @@ const addMemberToGroup = async (req, res) => {
 
     group.members.push({ user: user._id, role: role || "member" });
     await group.save();
+    await ensureRegisteredMember({ group: group._id, userId: user._id, role: role || "member" });
 
     const populated = await Group.findById(group._id).populate("members.user", "name email");
-    return res.status(200).json({ message: "Member added.", data: populated });
+    const data = await withGroupMembers(populated);
+    return res.status(200).json({ message: "Member added.", data });
   } catch (error) {
     return res.status(500).json({ message: "Failed to add member.", error: error.message });
+  }
+};
+
+const addGuestMember = async (req, res) => {
+  try {
+    const group = await Group.findById(req.params.id);
+    if (!group) {
+      return res.status(404).json({ message: "Group not found." });
+    }
+    if (!ensureAdmin(group, req.user.id)) {
+      return res.status(403).json({ message: "Only admins can add members." });
+    }
+
+    const { name, email, phone, notes } = req.body;
+    const guest = await createGuestMember({
+      group: group._id,
+      name,
+      email,
+      phone,
+      notes,
+      addedBy: req.user.id,
+    });
+
+    const data = await withGroupMembers(group);
+    return res.status(201).json({ message: "Guest added.", data, member: serializeMemberFull(guest) });
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ message: error.message });
+    }
+    return res.status(500).json({ message: "Failed to add guest.", error: error.message });
+  }
+};
+
+const updateGuestMember = async (req, res) => {
+  try {
+    const group = await Group.findById(req.params.id);
+    if (!group) {
+      return res.status(404).json({ message: "Group not found." });
+    }
+    if (!ensureAdmin(group, req.user.id)) {
+      return res.status(403).json({ message: "Only admins can edit members." });
+    }
+
+    const member = await GroupMember.findOne({ _id: req.params.memberId, group: group._id });
+    if (!member || member.memberType !== "guest") {
+      return res.status(404).json({ message: "Guest member not found." });
+    }
+
+    const { name, email, phone, notes } = req.body;
+    await applyGuestUpdate(member, { name, email, phone, notes });
+
+    const data = await withGroupMembers(group);
+    return res.status(200).json({ message: "Guest updated.", data, member: serializeMemberFull(member) });
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return res.status(400).json({ message: error.message });
+    }
+    return res.status(500).json({ message: "Failed to update guest.", error: error.message });
+  }
+};
+
+const inviteGuestMember = async (req, res) => {
+  try {
+    const group = await Group.findById(req.params.id);
+    if (!group) {
+      return res.status(404).json({ message: "Group not found." });
+    }
+    if (!ensureAdmin(group, req.user.id)) {
+      return res.status(403).json({ message: "Only admins can invite guests." });
+    }
+
+    const member = await GroupMember.findOne({ _id: req.params.memberId, group: group._id });
+    if (!member || member.memberType !== "guest") {
+      return res.status(404).json({ message: "Guest member not found." });
+    }
+
+    if (req.body?.email && !member.guestEmail) {
+      await applyGuestUpdate(member, { email: req.body.email });
+    }
+
+    if (!member.guestEmail) {
+      return res.status(400).json({
+        message: "This guest has no email address yet. Add one before sending an invite.",
+      });
+    }
+
+    if (member.guestInviteSentAt) {
+      const elapsedMs = Date.now() - member.guestInviteSentAt.getTime();
+      if (elapsedMs < GUEST_INVITE_COOLDOWN_MS) {
+        const retryAfterSeconds = Math.ceil((GUEST_INVITE_COOLDOWN_MS - elapsedMs) / 1000);
+        res.set("Retry-After", String(retryAfterSeconds));
+        return res.status(429).json({
+          message: `Please wait ${retryAfterSeconds}s before resending this invite.`,
+          retryAfterSeconds,
+        });
+      }
+    }
+
+    const inviter = await User.findById(req.user.id).select("name");
+    await sendGuestInviteEmail({
+      to: member.guestEmail,
+      guestName: member.guestName,
+      groupName: group.name,
+      inviterName: inviter?.name || "A group admin",
+    });
+
+    member.guestInviteSentAt = new Date();
+    await member.save();
+
+    return res.status(200).json({ message: "Invitation email sent.", member: serializeMemberFull(member) });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to send invite.", error: error.message });
   }
 };
 
@@ -148,21 +306,22 @@ const removeMemberFromGroup = async (req, res) => {
       return res.status(403).json({ message: "Only admins can remove members." });
     }
 
-    const memberId = req.params.memberId;
-    const wasMember = group.members.some(
-      (member) => String(member.user) === String(memberId)
-    );
-    if (!wasMember) {
+    const member = await resolveGroupMember(group._id, req.params.memberId);
+    if (!member) {
       return res.status(404).json({ message: "Member not found in group." });
     }
 
-    group.members = group.members.filter(
-      (member) => String(member.user) !== String(memberId)
-    );
-    await group.save();
+    if (member.memberType === "registered") {
+      group.members = group.members.filter(
+        (groupMember) => String(groupMember.user) !== String(member.user)
+      );
+      await group.save();
+    }
+    await GroupMember.deleteOne({ _id: member._id });
 
     const populated = await Group.findById(group._id).populate("members.user", "name email");
-    return res.status(200).json({ message: "Member removed.", data: populated });
+    const data = await withGroupMembers(populated);
+    return res.status(200).json({ message: "Member removed.", data });
   } catch (error) {
     return res.status(500).json({ message: "Failed to remove member.", error: error.message });
   }
@@ -186,38 +345,112 @@ const createGroupTransfer = async (req, res) => {
       });
     }
 
-    const { fromUser, toUser, amountPKR, account, toAccount, date } = req.body;
-    const membersSet = new Set(group.members.map((member) => String(member.user)));
-    if (!membersSet.has(String(fromUser)) || !membersSet.has(String(toUser))) {
+    const { fromUser: fromRef, toUser: toRef, amountPKR, account, toAccount, date } = req.body;
+
+    const [fromMember, toMember] = await Promise.all([
+      resolveGroupMember(group._id, fromRef),
+      resolveGroupMember(group._id, toRef),
+    ]);
+    if (!fromMember || !toMember) {
       return res.status(400).json({ message: "Transfer users must be group members." });
     }
-
-    // Only the fromUser can initiate a payment
-    if (String(fromUser) !== String(req.user.id)) {
-      return res.status(403).json({ message: "Only the payer can initiate a payment." });
+    if (String(fromMember._id) === String(toMember._id)) {
+      return res.status(400).json({ message: "Cannot record a payment to the same member." });
     }
 
-    const accountError = await ensureLinkedAccount(group._id, fromUser, account);
-    if (accountError) {
-      return res.status(400).json({ message: accountError });
+    const requesterIsAdmin = ensureAdmin(group, req.user.id);
+    const requesterIsFromUser =
+      fromMember.memberType === "registered" && String(fromMember.user) === String(req.user.id);
+    const requesterIsToUser =
+      toMember.memberType === "registered" && String(toMember.user) === String(req.user.id);
+
+    if (!requesterIsFromUser && !requesterIsToUser && !requesterIsAdmin) {
+      return res.status(403).json({
+        message: "Only the payer, the receiver, or a group admin can record this payment.",
+      });
+    }
+
+    const involvesGuest = fromMember.memberType === "guest" || toMember.memberType === "guest";
+
+    if (fromMember.memberType === "registered") {
+      const accountError = await ensureLinkedAccount(group._id, fromMember.user, account);
+      if (accountError) {
+        return res.status(400).json({ message: accountError });
+      }
+      const availableBalance = await getUserAccountBalance(fromMember.user, account);
+      if (Number(amountPKR) > availableBalance) {
+        return res.status(400).json({
+          message: `Insufficient balance. Available PKR ${availableBalance.toLocaleString()}.`,
+        });
+      }
+    }
+
+    let status = "Pending";
+    let confirmedAt = null;
+    let confirmedBy = null;
+    let finalToAccount = toAccount;
+
+    if (involvesGuest) {
+      // A guest can't log in to confirm, so whoever records this (the
+      // registered counterparty or an admin) is asserting the real-world
+      // payment already happened — skip the Pending handshake entirely.
+      status = "Confirmed";
+      confirmedAt = new Date();
+      confirmedBy = req.user.id;
+
+      if (toMember.memberType === "registered") {
+        if (!toAccount) {
+          return res.status(400).json({
+            message: "toAccount is required when the receiver is a registered member.",
+          });
+        }
+        const receiverAccountError = await ensureLinkedAccount(group._id, toMember.user, toAccount);
+        if (receiverAccountError) {
+          return res.status(400).json({ message: receiverAccountError });
+        }
+        finalToAccount = toAccount;
+      } else {
+        finalToAccount = undefined;
+      }
     }
 
     const transfer = await GroupTransfer.create({
       group: group._id,
-      fromUser,
-      toUser,
+      fromUser: fromMember._id,
+      toUser: toMember._id,
       amountPKR,
-      account,
-      toAccount,
+      account: fromMember.memberType === "registered" ? account : undefined,
+      toAccount: finalToAccount,
       date,
-      status: "Pending",
+      status,
       createdBy: req.user.id,
+      confirmedAt,
+      confirmedBy,
     });
 
-    const populated = await GroupTransfer.findById(transfer._id)
-      .populate("fromUser", "name email")
-      .populate("toUser", "name email");
-    return res.status(201).json({ message: "Transfer recorded. Waiting for confirmation.", data: populated });
+    if (status === "Confirmed") {
+      const [fromUserDoc, toUserDoc] = await Promise.all([
+        fromMember.memberType === "registered" ? User.findById(fromMember.user).select("name") : null,
+        toMember.memberType === "registered" ? User.findById(toMember.user).select("name") : null,
+      ]);
+      await createSettlementTransactions({
+        transfer,
+        groupName: group.name,
+        fromUserName: fromUserDoc?.name || fromMember.guestName || "Member",
+        toUserName: toUserDoc?.name || toMember.guestName || "Member",
+        fromUserRealId: fromMember.memberType === "registered" ? fromMember.user : null,
+        toUserRealId: toMember.memberType === "registered" ? toMember.user : null,
+      });
+    }
+
+    const populated = await populateTransfer(GroupTransfer.findById(transfer._id));
+    return res.status(201).json({
+      message:
+        status === "Confirmed"
+          ? "Payment recorded."
+          : "Transfer recorded. Waiting for confirmation.",
+      data: serializeTransfer(populated),
+    });
   } catch (error) {
     return res.status(500).json({ message: "Failed to record transfer.", error: error.message });
   }
@@ -244,8 +477,13 @@ const confirmGroupTransfer = async (req, res) => {
       return res.status(404).json({ message: "Transfer not found." });
     }
 
+    const [fromMember, toMember] = await Promise.all([
+      GroupMember.findById(transfer.fromUser),
+      GroupMember.findById(transfer.toUser),
+    ]);
+
     // Only the toUser (receiver) can confirm
-    if (String(transfer.toUser) !== String(req.user.id)) {
+    if (!toMember || toMember.memberType !== "registered" || String(toMember.user) !== String(req.user.id)) {
       return res.status(403).json({ message: "Only the receiver can confirm this payment." });
     }
 
@@ -257,25 +495,21 @@ const confirmGroupTransfer = async (req, res) => {
       return res.status(400).json({ message: "toAccount is required to confirm payment." });
     }
 
-    const receiverAccountError = await ensureLinkedAccount(
-      group._id,
-      transfer.toUser,
-      toAccount
-    );
+    const receiverAccountError = await ensureLinkedAccount(group._id, toMember.user, toAccount);
     if (receiverAccountError) {
       return res.status(400).json({ message: receiverAccountError });
     }
 
     const payerAccountError = await ensureLinkedAccount(
       group._id,
-      transfer.fromUser,
+      fromMember.user,
       transfer.account
     );
     if (payerAccountError) {
       return res.status(400).json({ message: "Payer no longer has a valid linked account." });
     }
 
-    const availableBalance = await getUserAccountBalance(transfer.fromUser, transfer.account);
+    const availableBalance = await getUserAccountBalance(fromMember.user, transfer.account);
     if (Number(transfer.amountPKR) > availableBalance) {
       return res.status(400).json({
         message: `Payer has insufficient balance. Available PKR ${availableBalance.toLocaleString()}.`,
@@ -283,8 +517,8 @@ const confirmGroupTransfer = async (req, res) => {
     }
 
     const [fromUserDoc, toUserDoc] = await Promise.all([
-      User.findById(transfer.fromUser).select("name"),
-      User.findById(transfer.toUser).select("name"),
+      User.findById(fromMember.user).select("name"),
+      User.findById(toMember.user).select("name"),
     ]);
 
     transfer.status = "Confirmed";
@@ -298,12 +532,12 @@ const confirmGroupTransfer = async (req, res) => {
       groupName: group.name,
       fromUserName: fromUserDoc?.name || "Member",
       toUserName: toUserDoc?.name || "Member",
+      fromUserRealId: fromMember.user,
+      toUserRealId: toMember.user,
     });
 
-    const populated = await GroupTransfer.findById(transfer._id)
-      .populate("fromUser", "name email")
-      .populate("toUser", "name email");
-    return res.status(200).json({ message: "Payment confirmed.", data: populated });
+    const populated = await populateTransfer(GroupTransfer.findById(transfer._id));
+    return res.status(200).json({ message: "Payment confirmed.", data: serializeTransfer(populated) });
   } catch (error) {
     return res.status(500).json({ message: "Failed to confirm transfer.", error: error.message });
   }
@@ -319,17 +553,19 @@ const rejectGroupTransfer = async (req, res) => {
       return res.status(403).json({ message: "Access denied." });
     }
 
-    const transfer = await GroupTransfer.findOne({ 
-      _id: req.params.transferId, 
-      group: group._id 
+    const transfer = await GroupTransfer.findOne({
+      _id: req.params.transferId,
+      group: group._id,
     });
-    
+
     if (!transfer) {
       return res.status(404).json({ message: "Transfer not found." });
     }
 
+    const toMember = await GroupMember.findById(transfer.toUser);
+
     // Only the toUser (receiver) can reject
-    if (String(transfer.toUser) !== String(req.user.id)) {
+    if (!toMember || toMember.memberType !== "registered" || String(toMember.user) !== String(req.user.id)) {
       return res.status(403).json({ message: "Only the receiver can reject this payment." });
     }
 
@@ -340,10 +576,8 @@ const rejectGroupTransfer = async (req, res) => {
     transfer.status = "Rejected";
     await transfer.save();
 
-    const populated = await GroupTransfer.findById(transfer._id)
-      .populate("fromUser", "name email")
-      .populate("toUser", "name email");
-    return res.status(200).json({ message: "Payment rejected.", data: populated });
+    const populated = await populateTransfer(GroupTransfer.findById(transfer._id));
+    return res.status(200).json({ message: "Payment rejected.", data: serializeTransfer(populated) });
   } catch (error) {
     return res.status(500).json({ message: "Failed to reject transfer.", error: error.message });
   }
@@ -362,11 +596,10 @@ const getGroupTransfers = async (req, res) => {
       });
     }
 
-    const transfers = await GroupTransfer.find({ group: group._id })
-      .sort({ date: -1 })
-      .populate("fromUser", "name email")
-      .populate("toUser", "name email");
-    return res.status(200).json({ data: transfers });
+    const transfers = await populateTransfer(
+      GroupTransfer.find({ group: group._id }).sort({ date: -1 })
+    );
+    return res.status(200).json({ data: transfers.map(serializeTransfer) });
   } catch (error) {
     return res.status(500).json({ message: "Failed to fetch transfers.", error: error.message });
   }
@@ -487,6 +720,9 @@ module.exports = {
   getUserGroups,
   getGroupDetails,
   addMemberToGroup,
+  addGuestMember,
+  updateGuestMember,
+  inviteGuestMember,
   removeMemberFromGroup,
   createGroupTransfer,
   getGroupTransfers,

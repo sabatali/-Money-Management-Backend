@@ -1,6 +1,7 @@
 const { validationResult } = require("express-validator");
 const Group = require("../models/group.model");
 const GroupExpense = require("../models/groupExpense.model");
+const GroupMember = require("../models/groupMember.model");
 const GroupMemberAccount = require("../models/groupMemberAccount.model");
 const Account = require("../models/account.model");
 const Transaction = require("../models/transaction.model");
@@ -9,6 +10,7 @@ const Loan = require("../models/loan.model");
 const { convertToPKR } = require("../utils/currencyConverter");
 const { calculateAccountBalances, getAccountBalancePKR } = require("../utils/accountBalanceCalculator");
 const { createPayerGroupExpenseTransactions } = require("../utils/groupLedger");
+const { listGroupMembers, serializeMemberRef } = require("../utils/groupMemberService");
 
 const ensureMember = (group, userId) =>
   group.members.some((member) => {
@@ -16,8 +18,22 @@ const ensureMember = (group, userId) =>
     return String(memberId) === String(userId);
   });
 
+/** Builds a lookup so a client-supplied ref (GroupMember._id OR, for
+ * backward compatibility, a raw User._id) resolves to the canonical
+ * GroupMember doc for this group. */
+const buildMemberRefMap = (members) => {
+  const map = new Map();
+  members.forEach((member) => {
+    map.set(String(member._id), member);
+    if (member.memberType === "registered" && member.user) {
+      map.set(String(member.user._id || member.user), member);
+    }
+  });
+  return map;
+};
+
 const normalizeSplits = (members, totalAmountPKR) => {
-  const memberIds = members.map((member) => String(member.user));
+  const memberIds = members.map((member) => String(member._id));
   const count = memberIds.length || 1;
   const rawShare = totalAmountPKR / count;
   const roundedShare = Math.round(rawShare * 100) / 100;
@@ -35,25 +51,27 @@ const normalizeSplits = (members, totalAmountPKR) => {
   return splits;
 };
 
-const validateManualSplits = ({ splits, memberIds, totalAmountPKR }) => {
+const validateManualSplits = ({ splits, refMap, totalAmountPKR }) => {
   if (!Array.isArray(splits) || splits.length === 0) {
-    return "Splits are required for manual split.";
+    return { error: "Splits are required for manual split." };
   }
 
-  const invalidMember = splits.find(
-    (split) => !memberIds.has(String(split.user))
-  );
-  if (invalidMember) {
-    return "Split users must be group members.";
+  const resolved = [];
+  for (const split of splits) {
+    const member = refMap.get(String(split.user));
+    if (!member) {
+      return { error: "Split users must be group members." };
+    }
+    resolved.push({ user: String(member._id), shareAmountPKR: Number(split.shareAmountPKR || 0) });
   }
 
-  const sum = splits.reduce((acc, split) => acc + Number(split.shareAmountPKR || 0), 0);
+  const sum = resolved.reduce((acc, split) => acc + split.shareAmountPKR, 0);
   const diff = Math.abs(sum - totalAmountPKR);
   if (diff > 1) {
-    return "Manual split amounts must match total amount.";
+    return { error: "Manual split amounts must match total amount." };
   }
 
-  return null;
+  return { splits: resolved };
 };
 
 const getPayerSharePKR = (paidById, splits) => {
@@ -75,6 +93,23 @@ const getUserAccountBalance = async (userId, accountName) => {
     loans,
   });
   return getAccountBalancePKR(balances, accountName);
+};
+
+const populateExpense = (query) =>
+  query
+    .populate({ path: "paidBy", populate: { path: "user", select: "name email" } })
+    .populate({ path: "splits.user", populate: { path: "user", select: "name email" } });
+
+const serializeExpense = (expenseDoc) => {
+  const obj = expenseDoc.toObject ? expenseDoc.toObject() : expenseDoc;
+  return {
+    ...obj,
+    paidBy: serializeMemberRef(expenseDoc.paidBy),
+    splits: (expenseDoc.splits || []).map((split) => ({
+      shareAmountPKR: split.shareAmountPKR,
+      user: serializeMemberRef(split.user),
+    })),
+  };
 };
 
 const createGroupExpense = async (req, res) => {
@@ -107,17 +142,23 @@ const createGroupExpense = async (req, res) => {
       });
     }
 
-    const memberIds = new Set(group.members.map((member) => String(member.user)));
-    if (!memberIds.has(String(paidBy))) {
+    const allMembers = await GroupMember.find({ group: group._id }).populate("user", "name email");
+    const refMap = buildMemberRefMap(allMembers);
+
+    const paidByMember = refMap.get(String(paidBy));
+    if (!paidByMember) {
       return res.status(400).json({ message: "PaidBy must be a group member." });
     }
-    if (String(paidBy) !== String(req.user.id)) {
+    if (paidByMember.memberType !== "registered") {
+      return res.status(400).json({ message: "Only registered members can pay for group expenses." });
+    }
+    if (String(paidByMember.user._id || paidByMember.user) !== String(req.user.id)) {
       return res.status(403).json({ message: "Only the payer can add this expense." });
     }
 
     const payerAccounts = await GroupMemberAccount.findOne({
       group: group._id,
-      user: paidBy,
+      user: req.user.id,
     });
     if (!payerAccounts?.accounts?.length) {
       return res.status(400).json({
@@ -131,7 +172,7 @@ const createGroupExpense = async (req, res) => {
     }
 
     const totalAmountPKR = await convertToPKR(Number(totalAmountOriginal), currency, req.user.id);
-    const availableBalance = await getUserAccountBalance(paidBy, accountUsed);
+    const availableBalance = await getUserAccountBalance(req.user.id, accountUsed);
     if (totalAmountPKR > availableBalance) {
       return res.status(400).json({
         message: `Insufficient balance. Available PKR ${availableBalance.toLocaleString()}.`,
@@ -141,20 +182,17 @@ const createGroupExpense = async (req, res) => {
     let finalSplits = [];
 
     if (splitType === "EQUAL") {
-      finalSplits = normalizeSplits(group.members, totalAmountPKR);
+      finalSplits = normalizeSplits(allMembers, totalAmountPKR);
     } else {
-      const errorMessage = validateManualSplits({
+      const { error, splits: resolvedSplits } = validateManualSplits({
         splits,
-        memberIds,
+        refMap,
         totalAmountPKR,
       });
-      if (errorMessage) {
-        return res.status(400).json({ message: errorMessage });
+      if (error) {
+        return res.status(400).json({ message: error });
       }
-      finalSplits = splits.map((split) => ({
-        user: split.user,
-        shareAmountPKR: Number(split.shareAmountPKR),
-      }));
+      finalSplits = resolvedSplits;
     }
 
     const expense = await GroupExpense.create({
@@ -163,7 +201,7 @@ const createGroupExpense = async (req, res) => {
       totalAmountOriginal,
       currency,
       totalAmountPKR,
-      paidBy,
+      paidBy: paidByMember._id,
       splitType,
       splits: finalSplits,
       accountUsed,
@@ -171,21 +209,19 @@ const createGroupExpense = async (req, res) => {
       createdBy: req.user.id,
     });
 
-    const payerSharePKR = getPayerSharePKR(paidBy, finalSplits);
+    const payerSharePKR = getPayerSharePKR(paidByMember._id, finalSplits);
     const advancePKR = Math.round((totalAmountPKR - payerSharePKR) * 100) / 100;
 
     await createPayerGroupExpenseTransactions({
-      userId: paidBy,
+      userId: req.user.id,
       groupName: group.name,
       expense,
       payerSharePKR,
       advancePKR,
     });
 
-    const populated = await GroupExpense.findById(expense._id)
-      .populate("paidBy", "name email")
-      .populate("splits.user", "name email");
-    return res.status(201).json({ message: "Group expense created.", data: populated });
+    const populated = await populateExpense(GroupExpense.findById(expense._id));
+    return res.status(201).json({ message: "Group expense created.", data: serializeExpense(populated) });
   } catch (error) {
     if (error.statusCode === 400) {
       return res.status(400).json({ message: error.message });
@@ -208,11 +244,8 @@ const getGroupExpenses = async (req, res) => {
       return res.status(403).json({ message: "Access denied." });
     }
 
-    const expenses = await GroupExpense.find({ group: groupId })
-      .sort({ date: -1 })
-      .populate("paidBy", "name email")
-      .populate("splits.user", "name email");
-    return res.status(200).json({ data: expenses });
+    const expenses = await populateExpense(GroupExpense.find({ group: groupId }).sort({ date: -1 }));
+    return res.status(200).json({ data: expenses.map(serializeExpense) });
   } catch (error) {
     return res.status(500).json({ message: "Failed to fetch expenses.", error: error.message });
   }
@@ -220,9 +253,7 @@ const getGroupExpenses = async (req, res) => {
 
 const getGroupExpenseById = async (req, res) => {
   try {
-    const expense = await GroupExpense.findById(req.params.id)
-      .populate("paidBy", "name email")
-      .populate("splits.user", "name email");
+    const expense = await populateExpense(GroupExpense.findById(req.params.id));
     if (!expense) {
       return res.status(404).json({ message: "Expense not found." });
     }
@@ -235,7 +266,7 @@ const getGroupExpenseById = async (req, res) => {
       });
     }
 
-    return res.status(200).json({ data: expense });
+    return res.status(200).json({ data: serializeExpense(expense) });
   } catch (error) {
     return res.status(500).json({ message: "Failed to fetch expense.", error: error.message });
   }
@@ -262,9 +293,15 @@ const updateGroupExpense = async (req, res) => {
     }
 
     const payload = { ...existing.toObject(), ...req.body };
-    const memberIds = new Set(group.members.map((member) => String(member.user)));
-    if (!memberIds.has(String(payload.paidBy))) {
+    const allMembers = await GroupMember.find({ group: group._id }).populate("user", "name email");
+    const refMap = buildMemberRefMap(allMembers);
+
+    const paidByMember = refMap.get(String(payload.paidBy));
+    if (!paidByMember) {
       return res.status(400).json({ message: "PaidBy must be a group member." });
+    }
+    if (paidByMember.memberType !== "registered") {
+      return res.status(400).json({ message: "Only registered members can pay for group expenses." });
     }
 
     const totalAmountPKR = await convertToPKR(
@@ -274,20 +311,17 @@ const updateGroupExpense = async (req, res) => {
     );
     let finalSplits = [];
     if (payload.splitType === "EQUAL") {
-      finalSplits = normalizeSplits(group.members, totalAmountPKR);
+      finalSplits = normalizeSplits(allMembers, totalAmountPKR);
     } else {
-      const errorMessage = validateManualSplits({
+      const { error, splits: resolvedSplits } = validateManualSplits({
         splits: payload.splits,
-        memberIds,
+        refMap,
         totalAmountPKR,
       });
-      if (errorMessage) {
-        return res.status(400).json({ message: errorMessage });
+      if (error) {
+        return res.status(400).json({ message: error });
       }
-      finalSplits = payload.splits.map((split) => ({
-        user: split.user,
-        shareAmountPKR: Number(split.shareAmountPKR),
-      }));
+      finalSplits = resolvedSplits;
     }
 
     const expense = await GroupExpense.findByIdAndUpdate(
@@ -297,18 +331,17 @@ const updateGroupExpense = async (req, res) => {
         totalAmountOriginal: payload.totalAmountOriginal,
         currency: payload.currency,
         totalAmountPKR,
-        paidBy: payload.paidBy,
+        paidBy: paidByMember._id,
         splitType: payload.splitType,
         splits: finalSplits,
         accountUsed: payload.accountUsed,
         date: payload.date,
       },
       { new: true }
-    )
-      .populate("paidBy", "name email")
-      .populate("splits.user", "name email");
+    );
 
-    return res.status(200).json({ message: "Group expense updated.", data: expense });
+    const populated = await populateExpense(GroupExpense.findById(expense._id));
+    return res.status(200).json({ message: "Group expense updated.", data: serializeExpense(populated) });
   } catch (error) {
     if (error.statusCode === 400) {
       return res.status(400).json({ message: error.message });

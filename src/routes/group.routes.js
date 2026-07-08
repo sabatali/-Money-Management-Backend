@@ -7,6 +7,9 @@ const {
   getUserGroups,
   getGroupDetails,
   addMemberToGroup,
+  addGuestMember,
+  updateGuestMember,
+  inviteGuestMember,
   removeMemberFromGroup,
   createGroupTransfer,
   getGroupTransfers,
@@ -39,6 +42,23 @@ router.post(
   addMemberToGroup
 );
 
+router.post(
+  "/:id/members/guest",
+  [
+    body("name").trim().notEmpty().withMessage("Guest name is required."),
+    body("email").optional({ nullable: true, checkFalsy: true }).isEmail().withMessage("Valid email is required."),
+  ],
+  addGuestMember
+);
+router.put(
+  "/:id/members/:memberId/guest",
+  [
+    body("email").optional({ nullable: true, checkFalsy: true }).isEmail().withMessage("Valid email is required."),
+  ],
+  updateGuestMember
+);
+router.post("/:id/members/:memberId/invite", inviteGuestMember);
+
 router.delete("/:id/members/:memberId", removeMemberFromGroup);
 
 router.post(
@@ -47,7 +67,7 @@ router.post(
     body("fromUser").isMongoId().withMessage("fromUser is required."),
     body("toUser").isMongoId().withMessage("toUser is required."),
     body("amountPKR").isNumeric().withMessage("amountPKR must be a number."),
-    body("account").trim().notEmpty().withMessage("account is required."),
+    body("account").optional({ nullable: true, checkFalsy: true }).trim(),
     body("date").notEmpty().withMessage("date is required."),
   ],
   createGroupTransfer

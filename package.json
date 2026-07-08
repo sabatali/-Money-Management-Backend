@@ -1,7 +1,7 @@
 {
-  "name": "student-daily-expense-backend",
+  "name": "libramate-backend",
   "version": "1.0.0",
-  "description": "Student Daily Expense Management System backend",
+  "description": "LibraMate — personal finance and group expense management backend",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
