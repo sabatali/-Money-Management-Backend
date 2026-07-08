@@ -1,5 +1,6 @@
 const nodemailer = require("nodemailer");
 const { getFrontendBaseUrl } = require("./frontendUrl");
+const { COLORS, renderEmailShell, renderButton, renderLinkFallback } = require("./emailTemplates");
 
 let cachedTransporter;
 
@@ -23,35 +24,47 @@ const getTransporter = () => {
   return cachedTransporter;
 };
 
-const buildVerificationEmailHtml = ({ name, verificationUrl }) => `
-  <div style="font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width: 480px; margin: 0 auto; color: #111827;">
-    <div style="width: 44px; height: 44px; border-radius: 12px; background: #10B981; color: #FFFFFF; font-weight: 700; font-size: 14px; display: flex; align-items: center; justify-content: center; margin-bottom: 20px;">LM</div>
-    <h2 style="margin: 0 0 12px;">Verify your email</h2>
-    <p>Hi ${name || "there"},</p>
-    <p>Confirm your email address to unlock Group Expenses and future collaborative features on LibraMate.</p>
-    <p style="margin: 24px 0;">
-      <a href="${verificationUrl}" style="background:#10B981;color:#FFFFFF;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">Verify Email</a>
-    </p>
-    <p style="font-size: 13px; color: #6b7280;">Or copy this link into your browser:</p>
-    <p style="word-break: break-all; font-size: 13px; color: #4F46E5;">${verificationUrl}</p>
-    <p style="font-size: 12px; color: #9ca3af; margin-top: 24px;">This link expires in 24 hours. If you didn't request this, you can ignore this email.</p>
-  </div>
-`;
+const buildVerificationEmailHtml = ({ name, verificationUrl }) =>
+  renderEmailShell({
+    bodyHtml: `
+      <h1 style="margin: 0 0 14px; font-size: 20px; font-weight: 800; color: ${COLORS.ink}; letter-spacing: -0.01em;">
+        Verify your email
+      </h1>
+      <p style="margin: 0 0 12px;">Hi ${name || "there"},</p>
+      <p style="margin: 0 0 4px;">
+        Confirm your email address to unlock Group Expenses and other collaborative
+        features on LibraMate.
+      </p>
+      ${renderButton(verificationUrl, "Verify Email")}
+      ${renderLinkFallback(verificationUrl)}
+      <p style="font-size: 12px; color: ${COLORS.muted}; margin: 16px 0 0;">
+        This link expires in 24 hours. If you didn't request this, you can safely ignore this email.
+      </p>
+    `,
+    footerNote: "You're receiving this because you signed up for LibraMate.",
+  });
 
-const buildGuestInviteEmailHtml = ({ guestName, groupName, inviterName, registerUrl }) => `
-  <div style="font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width: 480px; margin: 0 auto; color: #111827;">
-    <div style="width: 44px; height: 44px; border-radius: 12px; background: #10B981; color: #FFFFFF; font-weight: 700; font-size: 14px; display: flex; align-items: center; justify-content: center; margin-bottom: 20px;">LM</div>
-    <h2 style="margin: 0 0 12px;">You've been added to a group on LibraMate</h2>
-    <p>Hi ${guestName || "there"},</p>
-    <p>${inviterName || "A group admin"} added you as a guest member of <strong>${groupName}</strong> to track shared expenses on LibraMate.</p>
-    <p>Create a free account to log in, see your balances, and settle up directly — all your existing group history will carry over automatically.</p>
-    <p style="margin: 24px 0;">
-      <a href="${registerUrl}" style="background:#10B981;color:#FFFFFF;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">Create your account</a>
-    </p>
-    <p style="font-size: 13px; color: #6b7280;">Or copy this link into your browser:</p>
-    <p style="word-break: break-all; font-size: 13px; color: #4F46E5;">${registerUrl}</p>
-  </div>
-`;
+const buildGuestInviteEmailHtml = ({ guestName, groupName, inviterName, registerUrl }) =>
+  renderEmailShell({
+    bodyHtml: `
+      <h1 style="margin: 0 0 14px; font-size: 20px; font-weight: 800; color: ${COLORS.ink}; letter-spacing: -0.01em;">
+        You've been added to a group
+      </h1>
+      <p style="margin: 0 0 12px;">Hi ${guestName || "there"},</p>
+      <p style="margin: 0 0 12px;">
+        ${inviterName || "A group admin"} added you as a guest member of
+        <strong style="color: ${COLORS.ink};">${groupName}</strong> to track shared expenses
+        on LibraMate.
+      </p>
+      <p style="margin: 0 0 4px;">
+        Create a free account to log in, see your balances, and settle up directly —
+        all your existing group history will carry over automatically, nothing is duplicated.
+      </p>
+      ${renderButton(registerUrl, "Create your account")}
+      ${renderLinkFallback(registerUrl)}
+    `,
+    footerNote: `You're receiving this because you were added to "${groupName}" on LibraMate.`,
+  });
 
 /**
  * Invites a guest group-member to create a real LibraMate account. Reuses
