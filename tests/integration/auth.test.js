@@ -5,7 +5,7 @@ describe("Auth API", () => {
     const response = await request(require("../../src/app")).get("/");
 
     expect(response.status).toBe(200);
-    expect(response.body.message).toMatch(/Expense Management System API/i);
+    expect(response.body.message).toMatch(/LibraMate API/i);
   });
 
   test("POST /api/auth/register creates a user and returns token", async () => {

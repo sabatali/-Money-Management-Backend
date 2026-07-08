@@ -6,17 +6,14 @@ const {
   RESEND_COOLDOWN_MS,
 } = require("../utils/emailVerification");
 const { sendVerificationEmail: deliverVerificationEmail } = require("../utils/emailService");
+const { getFrontendBaseUrl } = require("../utils/frontendUrl");
 
 // Verification links are only useful for development/testing when the raw
 // token is surfaced somewhere other than the (possibly unconfigured) email
 // inbox, mirroring the existing dev-tools convention in this codebase.
 const isDevEnvironment = process.env.NODE_ENV !== "production";
 
-const buildVerificationUrl = (token) => {
-  const base =
-    process.env.FRONTEND_URL?.split(",")[0]?.trim() || "http://localhost:5173";
-  return `${base.replace(/\/$/, "")}/verify-email?token=${token}`;
-};
+const buildVerificationUrl = (token) => `${getFrontendBaseUrl()}/verify-email?token=${token}`;
 
 const sendVerificationEmail = async (req, res) => {
   try {
