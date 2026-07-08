@@ -1,4 +1,5 @@
 const nodemailer = require("nodemailer");
+const { getFrontendBaseUrl } = require("./frontendUrl");
 
 let cachedTransporter;
 
@@ -58,8 +59,7 @@ const buildGuestInviteEmailHtml = ({ guestName, groupName, inviterName, register
  * instead of throwing when SMTP isn't configured).
  */
 const sendGuestInviteEmail = async ({ to, guestName, groupName, inviterName }) => {
-  const base = process.env.FRONTEND_URL?.split(",")[0]?.trim() || "http://localhost:5173";
-  const registerUrl = `${base.replace(/\/$/, "")}/register?email=${encodeURIComponent(to)}`;
+  const registerUrl = `${getFrontendBaseUrl()}/register?email=${encodeURIComponent(to)}`;
 
   const transporter = getTransporter();
   if (!transporter) {
